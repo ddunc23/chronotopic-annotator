@@ -90,13 +90,14 @@ function escapeXml(value) {
 }
 
 function plainTextToHtml(value) {
-  return value
-    .split(/\n{2,}/)
-    .map((paragraph) => {
-      const lines = paragraph.split('\n').map((line) => escapeXml(line))
-      return `<p>${lines.join('<br>')}</p>`
-    })
-    .join('')
+  const escapedText = escapeXml(value.replace(/\r\n?/g, '\n'))
+  return `<p>${escapedText.replaceAll('\n', '<br>')}</p>`
+}
+
+function htmlToPlainText(value) {
+  const container = document.createElement('div')
+  container.innerHTML = value
+  return (container.innerText ?? container.textContent ?? '').replace(/\r\n?/g, '\n')
 }
 
 function documentHasCodeBlocks(doc) {
@@ -177,10 +178,7 @@ function App() {
       '<p>Paste or write your chapter text here, then highlight passages to assign topoi.</p>',
     editorProps: {
       transformPastedHTML(html) {
-        const container = document.createElement('div')
-        container.innerHTML = html
-        const text = container.textContent ?? ''
-        return plainTextToHtml(text)
+        return plainTextToHtml(htmlToPlainText(html))
       },
       transformPastedText(text) {
         return text

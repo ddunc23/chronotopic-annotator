@@ -60,6 +60,8 @@
   outline: none;
   border: 1px solid var(--border);
   white-space: pre-wrap;
+  tab-size: 4;
+  -moz-tab-size: 4;
 }
 
 .editor-content .annotation {
