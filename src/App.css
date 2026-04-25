@@ -138,6 +138,14 @@ ul {
 
 .selection-preview {
   font-size: 0.85rem;
+.boundary-preview {
+  font-style: italic;
+  color: var(--accent, #7c3aed);
+  border-left: 2px solid var(--accent, #7c3aed);
+  padding-left: 0.5rem;
+  margin-top: 0.25rem;
+}
+
 }
 
 .xml-panel pre {
@@ -184,6 +192,13 @@ ul {
   border: 1px solid var(--border);
   font-size: 0.75rem;
   line-height: 1.4;
+}
+
+.debug-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .graph-header-row {

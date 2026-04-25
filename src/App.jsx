@@ -8,9 +8,12 @@ import './App.css'
 const RELATIONS = ['direct', 'jump', 'indirect']
 
 const ANNOTATION_STYLES = {
-  topos: 'background: rgba(170, 59, 255, 0.18); border-bottom: 2px solid rgba(170, 59, 255, 0.7); padding-bottom: 1px;',
-  character: 'background: rgba(49, 142, 255, 0.15); border-bottom: 2px solid rgba(49, 142, 255, 0.7); padding-bottom: 1px;',
-  unknown: 'background: rgba(180, 180, 180, 0.2); border-bottom: 2px solid #aaa; padding-bottom: 1px;',
+  topos:
+    'background: rgba(170, 59, 255, 0.18); border-bottom: 2px solid rgba(170, 59, 255, 0.7); border-left: 2px solid rgba(170, 59, 255, 0.95); border-right: 2px solid rgba(170, 59, 255, 0.95); border-radius: 0.2em; padding: 0 0.14em 1px;',
+  character:
+    'background: rgba(49, 142, 255, 0.15); border-bottom: 2px solid rgba(49, 142, 255, 0.7); border-left: 2px solid rgba(49, 142, 255, 0.95); border-right: 2px solid rgba(49, 142, 255, 0.95); border-radius: 0.2em; padding: 0 0.14em 1px;',
+  unknown:
+    'background: rgba(180, 180, 180, 0.2); border-bottom: 2px solid #aaa; border-left: 2px solid #aaa; border-right: 2px solid #aaa; border-radius: 0.2em; padding: 0 0.14em 1px;',
 }
 
 const AnnotationMark = Mark.create({
@@ -86,6 +89,30 @@ function escapeXml(value) {
     .replaceAll("'", '&apos;')
 }
 
+function plainTextToHtml(value) {
+  return value
+    .split(/\n{2,}/)
+    .map((paragraph) => {
+      const lines = paragraph.split('\n').map((line) => escapeXml(line))
+      return `<p>${lines.join('<br>')}</p>`
+    })
+    .join('')
+}
+
+function documentHasCodeBlocks(doc) {
+  let hasCodeBlocks = false
+
+  doc.descendants((node) => {
+    if (node.type.name === 'codeBlock') {
+      hasCodeBlocks = true
+      return false
+    }
+    return true
+  })
+
+  return hasCodeBlocks
+}
+
 function getAnnotationMarksInRange(doc, from, to) {
   const marks = []
 
@@ -118,19 +145,24 @@ function App() {
   const [connections, setConnections] = useState([])
   const [framenameInput, setFramenameInput] = useState('')
   const [typeInput, setTypeInput] = useState('encounter')
+  const [selectedToposTemplateId, setSelectedToposTemplateId] = useState('')
   const [characterIdInput, setCharacterIdInput] = useState('')
   const [characterLabelInput, setCharacterLabelInput] = useState('')
+  const [selectedCharacterTemplateId, setSelectedCharacterTemplateId] = useState('')
   const [sourceToposId, setSourceToposId] = useState('')
   const [targetToposId, setTargetToposId] = useState('')
   const [relationInput, setRelationInput] = useState('direct')
   const [selectionSnapshot, setSelectionSnapshot] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
+  const [editingBoundary, setEditingBoundary] = useState(null)
   const [annotationForm, setAnnotationForm] = useState({
     framename: '',
     type: '',
     id: '',
     label: '',
   })
+  const [showDebug, setShowDebug] = useState(false)
+  const [didNormalizeCodeBlocks, setDidNormalizeCodeBlocks] = useState(false)
   const [debugState, setDebugState] = useState({
     lastAction: 'idle',
     selection: null,
@@ -140,9 +172,20 @@ function App() {
   const [copyState, setCopyState] = useState('idle')
 
   const editor = useEditor({
-    extensions: [StarterKit, AnnotationMark],
+    extensions: [StarterKit.configure({ codeBlock: false, code: false }), AnnotationMark],
     content:
       '<p>Paste or write your chapter text here, then highlight passages to assign topoi.</p>',
+    editorProps: {
+      transformPastedHTML(html) {
+        const container = document.createElement('div')
+        container.innerHTML = html
+        const text = container.textContent ?? ''
+        return plainTextToHtml(text)
+      },
+      transformPastedText(text) {
+        return text
+      },
+    },
     onSelectionUpdate: ({ editor: activeEditor }) => {
       const { from, to } = activeEditor.state.selection
       const currentActiveAnnotation = getSelectionAnnotation(activeEditor)
@@ -178,6 +221,25 @@ function App() {
       }))
     },
   })
+
+  useEffect(() => {
+    if (!editor || didNormalizeCodeBlocks || anchors.length > 0 || characterAnchors.length > 0) {
+      return
+    }
+
+    if (!documentHasCodeBlocks(editor.state.doc)) {
+      setDidNormalizeCodeBlocks(true)
+      return
+    }
+
+    const normalizedHtml = plainTextToHtml(editor.getText({ blockSeparator: '\n\n' }))
+    editor.commands.setContent(normalizedHtml)
+    setDidNormalizeCodeBlocks(true)
+    setDebugState((previous) => ({
+      ...previous,
+      lastAction: 'normalized-code-block-content',
+    }))
+  }, [anchors.length, characterAnchors.length, didNormalizeCodeBlocks, editor])
 
   const topoiById = useMemo(() => {
     return new Map(topoi.map((topos) => [topos.id, topos]))
@@ -491,8 +553,10 @@ function App() {
         annotationId,
       }),
     )
+
+    const marksOnTransactionDoc = getAnnotationMarksInRange(transaction.doc, from, to)
+
     view.dispatch(transaction)
-    editor.commands.focus()
 
     const marksAfter = getAnnotationMarksInRange(editor.state.doc, from, to)
     const htmlAfter = editor.getHTML()
@@ -511,15 +575,49 @@ function App() {
         annotationId,
         success: true,
         rangeText: editor.state.doc.textBetween(from, to, ' '),
+        marksOnTransactionDoc,
         marksFound: marksAfter,
         htmlContainsAnnotationId: htmlAfter.includes(`data-annotation-id="${annotationId}"`),
         htmlContainsAnnotationType: htmlAfter.includes(
           `data-annotation-type="${annotationType}"`,
         ),
+        htmlPreview: htmlAfter.slice(0, 1500),
       },
     }))
 
     return true
+  }
+
+  function handleToposTemplateChange(templateId) {
+    setSelectedToposTemplateId(templateId)
+
+    if (!templateId) {
+      return
+    }
+
+    const selectedTopos = topoiById.get(templateId)
+    if (!selectedTopos) {
+      return
+    }
+
+    setFramenameInput(selectedTopos.framename)
+    setTypeInput(selectedTopos.type)
+  }
+
+  function handleCharacterTemplateChange(templateId) {
+    setSelectedCharacterTemplateId(templateId)
+
+    if (!templateId) {
+      return
+    }
+
+    const selectedCharacter = charactersById.get(templateId)
+    if (!selectedCharacter) {
+      return
+    }
+
+    setCharacterIdInput(selectedCharacter.id)
+    setCharacterLabelInput(selectedCharacter.label)
   }
 
   function addToposFromSelection() {
@@ -527,14 +625,15 @@ function App() {
       return
     }
 
-    const trimmedFramename = framenameInput.trim()
+    const selectedTopos = selectedToposTemplateId ? topoiById.get(selectedToposTemplateId) : null
+    const trimmedFramename = selectedTopos?.framename ?? framenameInput.trim()
     if (!trimmedFramename) {
       return
     }
 
-    const existingTopos = topoi.find(
-      (topos) => topos.framename.toLowerCase() === trimmedFramename.toLowerCase(),
-    )
+    const existingTopos =
+      selectedTopos ??
+      topoi.find((topos) => topos.framename.toLowerCase() === trimmedFramename.toLowerCase())
     const toposId = existingTopos?.id ?? crypto.randomUUID()
 
     if (!existingTopos) {
@@ -546,6 +645,7 @@ function App() {
           type: typeInput.trim() || 'encounter',
         },
       ])
+      setSelectedToposTemplateId(toposId)
     }
 
     const annotationId = crypto.randomUUID()
@@ -572,14 +672,17 @@ function App() {
       return
     }
 
-    const trimmedCharacterId = characterIdInput.trim()
+    const selectedCharacter = selectedCharacterTemplateId
+      ? charactersById.get(selectedCharacterTemplateId)
+      : null
+    const trimmedCharacterId = selectedCharacter?.id ?? characterIdInput.trim()
     if (!trimmedCharacterId) {
       return
     }
 
-    const existingCharacter = characters.find(
-      (character) => character.id.toLowerCase() === trimmedCharacterId.toLowerCase(),
-    )
+    const existingCharacter =
+      selectedCharacter ??
+      characters.find((character) => character.id.toLowerCase() === trimmedCharacterId.toLowerCase())
     const stableCharacterId = existingCharacter?.id ?? trimmedCharacterId
 
     if (!existingCharacter) {
@@ -590,6 +693,7 @@ function App() {
           label: characterLabelInput.trim(),
         },
       ])
+      setSelectedCharacterTemplateId(stableCharacterId)
     }
 
     const annotationId = crypto.randomUUID()
@@ -794,6 +898,68 @@ function App() {
     setActiveAnnotation(null)
   }
 
+  function editBoundaries() {
+    if (!activeAnnotation) {
+      return
+    }
+    setEditingBoundary({
+      annotationType: activeAnnotation.annotationType,
+      annotationId: activeAnnotation.annotationId,
+    })
+    setSelectionSnapshot(null)
+    // Give focus back to editor so user can select text
+    editor?.commands.focus()
+  }
+
+  function applyNewBoundaries() {
+    if (!editor || !editingBoundary || !selectionSnapshot) {
+      return
+    }
+
+    const { annotationType, annotationId } = editingBoundary
+    const { from, to, quote } = selectionSnapshot
+
+    // Remove the old mark by extending to its full range then unsetting
+    editor
+      .chain()
+      .focus()
+      .extendMarkRange('annotation', { annotationType, annotationId })
+      .unsetMark('annotation')
+      .run()
+
+    // Update the anchor positions in state
+    if (annotationType === 'topos') {
+      setAnchors((previousAnchors) =>
+        previousAnchors.map((anchor) => {
+          if (anchor.id !== annotationId) {
+            return anchor
+          }
+          return { ...anchor, from, to, quote }
+        }),
+      )
+    } else {
+      setCharacterAnchors((previousAnchors) =>
+        previousAnchors.map((anchor) => {
+          if (anchor.id !== annotationId) {
+            return anchor
+          }
+          return { ...anchor, from, to, quote }
+        }),
+      )
+    }
+
+    // Re-apply mark at new range
+    applyAnnotationMark(from, to, annotationType, annotationId)
+
+    setEditingBoundary(null)
+    setSelectionSnapshot(null)
+  }
+
+  function cancelEditBoundary() {
+    setEditingBoundary(null)
+    setSelectionSnapshot(null)
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -854,10 +1020,27 @@ function App() {
                 : 'Highlight text in the editor to enable annotation.'}
             </p>
             <label>
+              Reuse existing topos
+              <select
+                value={selectedToposTemplateId}
+                onChange={(event) => handleToposTemplateChange(event.target.value)}
+              >
+                <option value="">Create or enter new topos</option>
+                {topoi.map((topos) => (
+                  <option key={topos.id} value={topos.id}>
+                    {topos.framename} ({topos.type})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
               Framename
               <input
                 value={framenameInput}
-                onChange={(event) => setFramenameInput(event.target.value)}
+                onChange={(event) => {
+                  setSelectedToposTemplateId('')
+                  setFramenameInput(event.target.value)
+                }}
                 type="text"
                 placeholder="Wedding"
               />
@@ -866,7 +1049,10 @@ function App() {
               Type
               <input
                 value={typeInput}
-                onChange={(event) => setTypeInput(event.target.value)}
+                onChange={(event) => {
+                  setSelectedToposTemplateId('')
+                  setTypeInput(event.target.value)
+                }}
                 type="text"
                 placeholder="encounter"
               />
@@ -884,10 +1070,27 @@ function App() {
           <section className="panel">
             <h2>Create character from highlight</h2>
             <label>
+              Reuse existing character
+              <select
+                value={selectedCharacterTemplateId}
+                onChange={(event) => handleCharacterTemplateChange(event.target.value)}
+              >
+                <option value="">Create or enter new character</option>
+                {characters.map((character) => (
+                  <option key={character.id} value={character.id}>
+                    {character.label ? `${character.label} (${character.id})` : character.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
               Character ID
               <input
                 value={characterIdInput}
-                onChange={(event) => setCharacterIdInput(event.target.value)}
+                onChange={(event) => {
+                  setSelectedCharacterTemplateId('')
+                  setCharacterIdInput(event.target.value)
+                }}
                 type="text"
                 placeholder="mariner"
               />
@@ -896,7 +1099,10 @@ function App() {
               Label (optional)
               <input
                 value={characterLabelInput}
-                onChange={(event) => setCharacterLabelInput(event.target.value)}
+                onChange={(event) => {
+                  setSelectedCharacterTemplateId('')
+                  setCharacterLabelInput(event.target.value)
+                }}
                 type="text"
                 placeholder="Ancient Mariner"
               />
@@ -918,6 +1124,35 @@ function App() {
             <h2>Selected Annotation</h2>
             {!activeAnnotationContext ? (
               <p className="selection-preview">Click annotated text to edit or remove it.</p>
+            ) : editingBoundary ? (
+              <>
+                <p className="selection-preview">
+                  <strong>Boundary edit mode.</strong> Select new text in the editor, then click
+                  &ldquo;Apply New Boundaries&rdquo;.
+                </p>
+                {selectionSnapshot && (
+                  <p className="selection-preview boundary-preview">
+                    New selection: &ldquo;{selectionSnapshot.quote.slice(0, 120)}{selectionSnapshot.quote.length > 120 ? '…' : ''}&rdquo;
+                  </p>
+                )}
+                <div className="annotation-actions">
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={applyNewBoundaries}
+                    disabled={!selectionSnapshot}
+                  >
+                    Apply New Boundaries
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={cancelEditBoundary}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
             ) : (
               <>
                 <p className="selection-preview">
@@ -995,6 +1230,13 @@ function App() {
                   <button
                     type="button"
                     onMouseDown={(event) => event.preventDefault()}
+                    onClick={editBoundaries}
+                  >
+                    Edit Boundaries
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={removeActiveAnnotation}
                   >
                     Remove Annotation
@@ -1005,18 +1247,27 @@ function App() {
           </section>
 
           <section className="panel debug-panel">
-            <h2>Debug</h2>
-            <pre>
-              {JSON.stringify(
-                {
-                  selectionSnapshot,
-                  activeAnnotation,
-                  debugState,
-                },
-                null,
-                2,
-              )}
-            </pre>
+            <div className="debug-header">
+              <h2>Debug</h2>
+              <button type="button" onClick={() => setShowDebug((previous) => !previous)}>
+                {showDebug ? 'Hide Debug' : 'Show Debug'}
+              </button>
+            </div>
+            {showDebug ? (
+              <pre>
+                {JSON.stringify(
+                  {
+                    selectionSnapshot,
+                    activeAnnotation,
+                    debugState,
+                  },
+                  null,
+                  2,
+                )}
+              </pre>
+            ) : (
+              <p className="selection-preview">Debug diagnostics are hidden.</p>
+            )}
           </section>
 
           <section className="panel">
