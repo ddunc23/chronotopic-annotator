@@ -152,6 +152,34 @@ function htmlToPlainText(value) {
   return (container.innerText ?? container.textContent ?? '').replace(/\r\n?/g, '\n')
 }
 
+function removeAnnotationSpansFromHtml(value, shouldRemove) {
+  const container = document.createElement('div')
+  container.innerHTML = value
+
+  const matches = container.querySelectorAll('span[data-annotation-type][data-annotation-id]')
+
+  matches.forEach((element) => {
+    const annotationType = element.getAttribute('data-annotation-type')
+    const annotationId = element.getAttribute('data-annotation-id')
+
+    if (!shouldRemove({ annotationType, annotationId })) {
+      return
+    }
+
+    const parent = element.parentNode
+    if (!parent) {
+      return
+    }
+
+    while (element.firstChild) {
+      parent.insertBefore(element.firstChild, element)
+    }
+    parent.removeChild(element)
+  })
+
+  return container.innerHTML
+}
+
 function documentHasCodeBlocks(doc) {
   let hasCodeBlocks = false
 
@@ -221,6 +249,22 @@ function AppMultiDoc() {
   const [sourceToposId, setSourceToposId] = useState('')
   const [targetToposId, setTargetToposId] = useState('')
   const [relationInput, setRelationInput] = useState('direct')
+  const [editingToposId, setEditingToposId] = useState(null)
+  const [toposEditForm, setToposEditForm] = useState({
+    framename: '',
+    type: 'encounter',
+  })
+  const [editingCharacterId, setEditingCharacterId] = useState(null)
+  const [characterEditForm, setCharacterEditForm] = useState({
+    id: '',
+    label: '',
+  })
+  const [editingConnectionId, setEditingConnectionId] = useState(null)
+  const [connectionEditForm, setConnectionEditForm] = useState({
+    sourceToposId: '',
+    targetToposId: '',
+    relation: 'direct',
+  })
   const [selectionSnapshot, setSelectionSnapshot] = useState(null)
   const [activeAnnotation, setActiveAnnotation] = useState(null)
   const [editingBoundary, setEditingBoundary] = useState(null)
@@ -842,6 +886,269 @@ function AppMultiDoc() {
         },
       ]
     })
+  }
+
+  function startEditingConnection(connection) {
+    setEditingConnectionId(connection.id)
+    setConnectionEditForm({
+      sourceToposId: connection.sourceToposId,
+      targetToposId: connection.targetToposId,
+      relation: connection.relation,
+    })
+  }
+
+  function cancelEditingConnection() {
+    setEditingConnectionId(null)
+    setConnectionEditForm({
+      sourceToposId: '',
+      targetToposId: '',
+      relation: 'direct',
+    })
+  }
+
+  function saveConnectionEdits() {
+    if (!editingConnectionId) {
+      return
+    }
+
+    const { sourceToposId: newSourceToposId, targetToposId: newTargetToposId, relation: newRelation } =
+      connectionEditForm
+
+    if (!newSourceToposId || !newTargetToposId || !newRelation) {
+      return
+    }
+
+    setConnections((previousConnections) => {
+      const duplicate = previousConnections.find(
+        (connection) =>
+          connection.id !== editingConnectionId &&
+          connection.sourceToposId === newSourceToposId &&
+          connection.targetToposId === newTargetToposId &&
+          connection.relation === newRelation,
+      )
+
+      if (duplicate) {
+        return previousConnections
+      }
+
+      return previousConnections.map((connection) => {
+        if (connection.id !== editingConnectionId) {
+          return connection
+        }
+
+        return {
+          ...connection,
+          sourceToposId: newSourceToposId,
+          targetToposId: newTargetToposId,
+          relation: newRelation,
+        }
+      })
+    })
+
+    cancelEditingConnection()
+  }
+
+  function deleteConnection(connectionId) {
+    setConnections((previousConnections) =>
+      previousConnections.filter((connection) => connection.id !== connectionId),
+    )
+
+    if (editingConnectionId === connectionId) {
+      cancelEditingConnection()
+    }
+  }
+
+  function startEditingTopos(topos) {
+    setEditingToposId(topos.id)
+    setToposEditForm({
+      framename: topos.framename,
+      type: topos.type,
+    })
+  }
+
+  function cancelEditingTopos() {
+    setEditingToposId(null)
+    setToposEditForm({
+      framename: '',
+      type: 'encounter',
+    })
+  }
+
+  function saveToposEdits() {
+    if (!editingToposId) {
+      return
+    }
+
+    const updatedFramename = toposEditForm.framename.trim()
+    if (!updatedFramename) {
+      return
+    }
+
+    setTopoi((previousTopoi) =>
+      previousTopoi.map((topos) => {
+        if (topos.id !== editingToposId) {
+          return topos
+        }
+        return {
+          ...topos,
+          framename: updatedFramename,
+          type: toposEditForm.type.trim() || 'encounter',
+        }
+      }),
+    )
+
+    cancelEditingTopos()
+  }
+
+  function deleteTopos(toposId) {
+    const removedToposAnchorIds = new Set(
+      anchors.filter((anchor) => anchor.toposId === toposId).map((anchor) => anchor.id),
+    )
+
+    if (removedToposAnchorIds.size > 0) {
+      setChapters((previousChapters) =>
+        previousChapters.map((chapter) => ({
+          ...chapter,
+          content: removeAnnotationSpansFromHtml(chapter.content, ({ annotationType, annotationId }) => {
+            return annotationType === 'topos' && removedToposAnchorIds.has(annotationId)
+          }),
+        })),
+      )
+    }
+
+    setTopoi((previousTopoi) => previousTopoi.filter((topos) => topos.id !== toposId))
+    setAnchors((previousAnchors) => previousAnchors.filter((anchor) => anchor.toposId !== toposId))
+    setConnections((previousConnections) =>
+      previousConnections.filter(
+        (connection) => connection.sourceToposId !== toposId && connection.targetToposId !== toposId,
+      ),
+    )
+
+    if (selectedToposTemplateId === toposId) {
+      setSelectedToposTemplateId('')
+    }
+    if (sourceToposId === toposId) {
+      setSourceToposId('')
+    }
+    if (targetToposId === toposId) {
+      setTargetToposId('')
+    }
+    if (editingToposId === toposId) {
+      cancelEditingTopos()
+    }
+  }
+
+  function startEditingCharacter(character) {
+    setEditingCharacterId(character.id)
+    setCharacterEditForm({
+      id: character.id,
+      label: character.label,
+    })
+  }
+
+  function cancelEditingCharacter() {
+    setEditingCharacterId(null)
+    setCharacterEditForm({
+      id: '',
+      label: '',
+    })
+  }
+
+  function saveCharacterEdits() {
+    if (!editingCharacterId) {
+      return
+    }
+
+    const updatedCharacterId = characterEditForm.id.trim()
+    if (!updatedCharacterId) {
+      return
+    }
+
+    const previousCharacterId = editingCharacterId
+    const existingCharacterWithNewId = charactersById.get(updatedCharacterId)
+    const renamingToDifferentCharacter =
+      existingCharacterWithNewId && existingCharacterWithNewId.id !== previousCharacterId
+
+    if (renamingToDifferentCharacter) {
+      setCharacterAnchors((previousAnchors) =>
+        previousAnchors.map((anchor) => {
+          if (anchor.characterId !== previousCharacterId) {
+            return anchor
+          }
+          return {
+            ...anchor,
+            characterId: updatedCharacterId,
+          }
+        }),
+      )
+
+      setCharacters((previousCharacters) =>
+        previousCharacters
+          .map((character) => {
+            if (character.id === updatedCharacterId) {
+              return {
+                ...character,
+                label: characterEditForm.label.trim(),
+              }
+            }
+            return character
+          })
+          .filter((character) => character.id !== previousCharacterId),
+      )
+
+      cancelEditingCharacter()
+      return
+    }
+
+    setCharacters((previousCharacters) =>
+      previousCharacters.map((character) => {
+        if (character.id !== previousCharacterId) {
+          return character
+        }
+        return {
+          ...character,
+          id: updatedCharacterId,
+          label: characterEditForm.label.trim(),
+        }
+      }),
+    )
+
+    if (updatedCharacterId !== previousCharacterId) {
+      setCharacterAnchors((previousAnchors) =>
+        previousAnchors.map((anchor) => {
+          if (anchor.characterId !== previousCharacterId) {
+            return anchor
+          }
+          return {
+            ...anchor,
+            characterId: updatedCharacterId,
+          }
+        }),
+      )
+
+      if (selectedCharacterTemplateId === previousCharacterId) {
+        setSelectedCharacterTemplateId(updatedCharacterId)
+      }
+    }
+
+    cancelEditingCharacter()
+  }
+
+  function deleteCharacter(characterId) {
+    setCharacters((previousCharacters) =>
+      previousCharacters.filter((character) => character.id !== characterId),
+    )
+    setCharacterAnchors((previousAnchors) =>
+      previousAnchors.filter((anchor) => anchor.characterId !== characterId),
+    )
+
+    if (selectedCharacterTemplateId === characterId) {
+      setSelectedCharacterTemplateId('')
+    }
+
+    if (editingCharacterId === characterId) {
+      cancelEditingCharacter()
+    }
   }
 
   function saveAnnotationEdits() {
@@ -1476,10 +1783,68 @@ function AppMultiDoc() {
             <ul>
               {topoi.map((topos) => {
                 const anchorCount = anchors.filter((anchor) => anchor.toposId === topos.id).length
+                const isEditing = editingToposId === topos.id
+
                 return (
                   <li key={topos.id}>
-                    <strong>{topos.framename}</strong> ({topos.type}) · {anchorCount} anchor
-                    {anchorCount === 1 ? '' : 's'}
+                    {isEditing ? (
+                      <>
+                        <label>
+                          Framename
+                          <input
+                            value={toposEditForm.framename}
+                            onChange={(event) =>
+                              setToposEditForm((previous) => ({
+                                ...previous,
+                                framename: event.target.value,
+                              }))
+                            }
+                            type="text"
+                          />
+                        </label>
+                        <label>
+                          Type
+                          <input
+                            value={toposEditForm.type}
+                            onChange={(event) =>
+                              setToposEditForm((previous) => ({
+                                ...previous,
+                                type: event.target.value,
+                              }))
+                            }
+                            type="text"
+                          />
+                        </label>
+                        <div className="annotation-actions">
+                          <button
+                            type="button"
+                            onClick={saveToposEdits}
+                            disabled={!toposEditForm.framename.trim()}
+                          >
+                            Save
+                          </button>
+                          <button type="button" onClick={cancelEditingTopos}>
+                            Cancel
+                          </button>
+                          <button type="button" onClick={() => deleteTopos(topos.id)}>
+                            Delete
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <strong>{topos.framename}</strong> ({topos.type}) · {anchorCount} anchor
+                        {anchorCount === 1 ? '' : 's'}
+                        <div className="annotation-actions">
+                          <button type="button" onClick={() => startEditingTopos(topos)}>
+                            Edit
+                          </button>
+                          <button type="button" onClick={() => deleteTopos(topos.id)}>
+                            Delete
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </li>
                 )
               })}
@@ -1494,11 +1859,69 @@ function AppMultiDoc() {
                 const anchorCount = characterAnchors.filter(
                   (anchor) => anchor.characterId === character.id,
                 ).length
+                const isEditing = editingCharacterId === character.id
+
                 return (
                   <li key={character.id}>
-                    <strong>{character.id}</strong>
-                    {character.label ? ` (${character.label})` : ''} · {anchorCount} anchor
-                    {anchorCount === 1 ? '' : 's'}
+                    {isEditing ? (
+                      <>
+                        <label>
+                          Character ID
+                          <input
+                            value={characterEditForm.id}
+                            onChange={(event) =>
+                              setCharacterEditForm((previous) => ({
+                                ...previous,
+                                id: event.target.value,
+                              }))
+                            }
+                            type="text"
+                          />
+                        </label>
+                        <label>
+                          Label (optional)
+                          <input
+                            value={characterEditForm.label}
+                            onChange={(event) =>
+                              setCharacterEditForm((previous) => ({
+                                ...previous,
+                                label: event.target.value,
+                              }))
+                            }
+                            type="text"
+                          />
+                        </label>
+                        <div className="annotation-actions">
+                          <button
+                            type="button"
+                            onClick={saveCharacterEdits}
+                            disabled={!characterEditForm.id.trim()}
+                          >
+                            Save
+                          </button>
+                          <button type="button" onClick={cancelEditingCharacter}>
+                            Cancel
+                          </button>
+                          <button type="button" onClick={() => deleteCharacter(character.id)}>
+                            Delete
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <strong>{character.id}</strong>
+                        {character.label ? ` (${character.label})` : ''} · {anchorCount} anchor
+                        {anchorCount === 1 ? '' : 's'}
+                        <div className="annotation-actions">
+                          <button type="button" onClick={() => startEditingCharacter(character)}>
+                            Edit
+                          </button>
+                          <button type="button" onClick={() => deleteCharacter(character.id)}>
+                            Delete
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </li>
                 )
               })}
@@ -1547,9 +1970,99 @@ function AppMultiDoc() {
               {connections.map((connection) => {
                 const source = topoiById.get(connection.sourceToposId)?.framename ?? 'Unknown'
                 const target = topoiById.get(connection.targetToposId)?.framename ?? 'Unknown'
+                const isEditing = editingConnectionId === connection.id
+
                 return (
                   <li key={connection.id}>
-                    {source} → {target} ({connection.relation})
+                    {isEditing ? (
+                      <>
+                        <label>
+                          Source
+                          <select
+                            value={connectionEditForm.sourceToposId}
+                            onChange={(event) =>
+                              setConnectionEditForm((previous) => ({
+                                ...previous,
+                                sourceToposId: event.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">Select source</option>
+                            {topoi.map((topos) => (
+                              <option key={topos.id} value={topos.id}>
+                                {topos.framename}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Target
+                          <select
+                            value={connectionEditForm.targetToposId}
+                            onChange={(event) =>
+                              setConnectionEditForm((previous) => ({
+                                ...previous,
+                                targetToposId: event.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">Select target</option>
+                            {topoi.map((topos) => (
+                              <option key={topos.id} value={topos.id}>
+                                {topos.framename}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Relation
+                          <select
+                            value={connectionEditForm.relation}
+                            onChange={(event) =>
+                              setConnectionEditForm((previous) => ({
+                                ...previous,
+                                relation: event.target.value,
+                              }))
+                            }
+                          >
+                            {RELATIONS.map((relation) => (
+                              <option key={relation} value={relation}>
+                                {relation}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className="annotation-actions">
+                          <button
+                            type="button"
+                            onClick={saveConnectionEdits}
+                            disabled={
+                              !connectionEditForm.sourceToposId || !connectionEditForm.targetToposId
+                            }
+                          >
+                            Save
+                          </button>
+                          <button type="button" onClick={cancelEditingConnection}>
+                            Cancel
+                          </button>
+                          <button type="button" onClick={() => deleteConnection(connection.id)}>
+                            Delete
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        {source} → {target} ({connection.relation})
+                        <div className="annotation-actions">
+                          <button type="button" onClick={() => startEditingConnection(connection)}>
+                            Edit
+                          </button>
+                          <button type="button" onClick={() => deleteConnection(connection.id)}>
+                            Delete
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </li>
                 )
               })}
